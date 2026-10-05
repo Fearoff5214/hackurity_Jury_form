@@ -1,5 +1,5 @@
 -- First admin: put your email here BEFORE signing in the first time.
-insert into invitations (email, name, role) values ('admin@example.com', 'Admin', 'admin')
+insert into invitations (email, name, role) values ('parameshlogaa@gmail.com', 'Admin', 'admin')
 on conflict do nothing;
 
 insert into tracks (id, name, sponsor) values
