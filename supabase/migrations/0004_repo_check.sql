@@ -51,37 +51,34 @@ begin
   if v_team.id is null then raise exception 'team not found'; end if;
 
   select value into v_token from app_secrets where key = 'github_token';
-  if v_token is null then
-    return jsonb_build_object('error', 'no github_token configured in app_secrets', 'checked_at', now());
-  end if;
-
   v_url := v_team.repo_url;
-  if v_url is null or trim(v_url) = '' then
-    return jsonb_build_object('error', 'no repo_url set for this team', 'checked_at', now());
-  end if;
 
-  select m[1], m[2] into v_owner, v_repo
-    from regexp_matches(v_url, 'github\.com[:/]+([^/]+)/([^/.]+)') m;
-  if v_owner is null or v_repo is null then
-    return jsonb_build_object('error', 'repo_url is not a recognizable github.com URL', 'repo_url', v_url, 'checked_at', now());
-  end if;
-
-  select coding_window_opens_at, coding_window_closes_at into v_opens, v_closes from settings where id = 1;
-  v_auth_headers := ARRAY[
-    extensions.http_header('Authorization', 'token ' || v_token),
-    extensions.http_header('User-Agent', 'hackurity-portal')
-  ]::extensions.http_header[];
-
-  begin
-    select * into v_resp from extensions.http(
-      ('GET', format('https://api.github.com/repos/%s/%s', v_owner, v_repo), v_auth_headers, NULL, NULL)::extensions.http_request
-    );
-
-    if v_resp.status = 404 then
-      v_result := jsonb_build_object('error', 'repo not found or private', 'status', v_resp.status);
-    elsif v_resp.status <> 200 then
-      v_result := jsonb_build_object('error', 'github api error', 'status', v_resp.status);
+  if v_token is null then
+    v_result := jsonb_build_object('error', 'no github_token configured in app_secrets');
+  elsif v_url is null or trim(v_url) = '' then
+    v_result := jsonb_build_object('error', 'no repo_url set for this team');
+  else
+    select m[1], m[2] into v_owner, v_repo
+      from regexp_matches(v_url, 'github\.com[:/]+([^/]+)/([^/.]+)') m;
+    if v_owner is null or v_repo is null then
+      v_result := jsonb_build_object('error', 'repo_url is not a recognizable github.com URL', 'repo_url', v_url);
     else
+      select coding_window_opens_at, coding_window_closes_at into v_opens, v_closes from settings where id = 1;
+      v_auth_headers := ARRAY[
+        extensions.http_header('Authorization', 'token ' || v_token),
+        extensions.http_header('User-Agent', 'hackurity-portal')
+      ]::extensions.http_header[];
+
+      begin
+        select * into v_resp from extensions.http(
+          ('GET', format('https://api.github.com/repos/%s/%s', v_owner, v_repo), v_auth_headers, NULL, NULL)::extensions.http_request
+        );
+
+        if v_resp.status = 404 then
+          v_result := jsonb_build_object('error', 'repo not found or private', 'status', v_resp.status);
+        elsif v_resp.status <> 200 then
+          v_result := jsonb_build_object('error', 'github api error', 'status', v_resp.status);
+        else
       v_repo_json := v_resp.content::jsonb;
       v_public := not coalesce((v_repo_json->>'private')::boolean, true);
       v_created_at := (v_repo_json->>'created_at')::timestamptz;
@@ -151,10 +148,12 @@ begin
         'has_license', v_has_license,
         'has_committed_dotenv', v_has_dotenv
       );
+        end if;
+      exception when others then
+        v_result := jsonb_build_object('error', sqlerrm);
+      end;
     end if;
-  exception when others then
-    v_result := jsonb_build_object('error', sqlerrm);
-  end;
+  end if;
 
   v_result := v_result || jsonb_build_object('checked_at', now());
   update teams set repo_check = v_result, repo_checked_at = now() where id = p_team;
