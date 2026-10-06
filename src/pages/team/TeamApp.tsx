@@ -173,10 +173,13 @@ function Project({ data, reload }: { data: Data; reload: () => void }) {
     const { error } = await supabase.from('teams').update(patch).eq('id', team!.id)
     setMsg(error ? error.message : 'Saved'); if (!error) reload()
   }
+  const repoLooksLikeGithub = !f.repo_url.trim() || /^https:\/\/github\.com\/[^/]+\/[^/]+\/?$/i.test(f.repo_url.trim())
   return (
     <div className="card narrow" style={{ maxWidth: 560 }}>
       <h2>Project links</h2>
-      <label>Repository URL<input value={f.repo_url} onChange={(e) => setF({ ...f, repo_url: e.target.value })} /></label>
+      <label>GitHub repository URL (must be public, or shared with the organisers)
+        <input value={f.repo_url} onChange={(e) => setF({ ...f, repo_url: e.target.value })} placeholder="https://github.com/your-team/your-repo" /></label>
+      {!repoLooksLikeGithub && <p className="warn">That doesn't look like a github.com repo URL — double check it.</p>}
       <label>Demo video URL<input value={f.video_url} onChange={(e) => setF({ ...f, video_url: e.target.value })} /></label>
       <label>Write-up URL<input value={f.writeup_url} onChange={(e) => setF({ ...f, writeup_url: e.target.value })} /></label>
       <button onClick={save}>Save links</button> <span className="muted">{msg}</span>

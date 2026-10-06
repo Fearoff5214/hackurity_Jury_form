@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useState } from 'react'
 import { Route, Routes } from 'react-router-dom'
 import { Shell } from '../../components/Shell'
-import { check, supabase, type Profile, type ProblemStatement, type Settings, type Team, type Track } from '../../lib/supabase'
+import { check, supabase, type Member, type Profile, type ProblemStatement, type RepoCheck, type Settings, type Team, type Track } from '../../lib/supabase'
 
 interface Assignment { id: string; juror_id: string; team_id: string | null; track_id: string | null }
 interface LeaderRow {
@@ -17,18 +17,18 @@ interface CardRow {
 function useAdminData() {
   const [d, setD] = useState<{
     teams: Team[]; people: Profile[]; tracks: Track[]; ps: ProblemStatement[]; settings: Settings
-    assigns: Assignment[]; board: LeaderRow[]; cards: CardRow[]
+    assigns: Assignment[]; board: LeaderRow[]; cards: CardRow[]; members: Member[]
   } | null>(null)
   const reload = useCallback(async () => {
     const q = (t: string) => supabase.from(t).select('*')
-    const [teams, people, tracks, ps, settings, assigns, board, cards] = await Promise.all([
+    const [teams, people, tracks, ps, settings, assigns, board, cards, members] = await Promise.all([
       q('teams').order('created_at'), q('profiles').order('email'), q('tracks').order('id'), q('problem_statements').order('id'),
-      q('settings').single(), q('jury_assignments'), supabase.rpc('admin_leaderboard'), supabase.rpc('admin_scorecards'),
+      q('settings').single(), q('jury_assignments'), supabase.rpc('admin_leaderboard'), supabase.rpc('admin_scorecards'), q('team_members'),
     ])
     setD({
       teams: check(teams) as Team[], people: check(people) as Profile[], tracks: check(tracks) as Track[],
       ps: check(ps) as ProblemStatement[], settings: check(settings) as Settings, assigns: check(assigns) as Assignment[],
-      board: check(board) as LeaderRow[], cards: check(cards) as CardRow[],
+      board: check(board) as LeaderRow[], cards: check(cards) as CardRow[], members: check(members) as Member[],
     })
   }, [])
   useEffect(() => { reload() }, [reload])
@@ -67,6 +67,14 @@ function Settings_({ d, reload }: P) {
         <input type="number" min={1} value={s.max_teams_per_ps} onChange={(e) => save({ max_teams_per_ps: +e.target.value })} /></label>
       <label>Max team size
         <input type="number" min={1} value={s.max_team_size} onChange={(e) => save({ max_team_size: +e.target.value })} /></label>
+      <h2>Coding window</h2>
+      <label>Opens
+        <input type="datetime-local" value={s.coding_window_opens_at ? s.coding_window_opens_at.slice(0, 16) : ''}
+          onChange={(e) => save({ coding_window_opens_at: e.target.value ? new Date(e.target.value).toISOString() : null })} /></label>
+      <label>Closes
+        <input type="datetime-local" value={s.coding_window_closes_at ? s.coding_window_closes_at.slice(0, 16) : ''}
+          onChange={(e) => save({ coding_window_closes_at: e.target.value ? new Date(e.target.value).toISOString() : null })} /></label>
+      <p className="muted">Used by the repo-check RPC to flag repos created or committed outside this window.</p>
       <label><input type="checkbox" checked={s.scoring_closed} onChange={(e) => save({ scoring_closed: e.target.checked })} />Scoring closed (jurors can no longer edit)</label>
       <label><input type="checkbox" checked={s.results_published} onChange={(e) => save({ results_published: e.target.checked })} />Results published (teams can see rank, scores, comments)</label>
       <p className="muted">{msg}</p>
@@ -74,12 +82,66 @@ function Settings_({ d, reload }: P) {
   )
 }
 
+function repoBadges(rc: RepoCheck | null) {
+  if (!rc) return <span className="muted">not checked</span>
+  if (rc.error) return <span className="error">{rc.error}</span>
+  const missing = rc.readme_headings_missing ?? []
+  const b = (ok: boolean | null | undefined, label: string) =>
+    <span key={label} className={ok === true ? 'ok' : ok === false ? 'error' : 'muted'} style={{ marginRight: 6 }}>{label} {ok === true ? '✓' : ok === false ? '✗' : 'n/a'}</span>
+  return (
+    <div>
+      {b(rc.public, 'public')}
+      {b(rc.created_after_window, 'created-in-window')}
+      {b(rc.commits_in_window, 'commits-in-window')}
+      {b(rc.has_submission_tag, 'tag')}
+      {b(rc.has_license, 'license')}
+      <span className={missing.length ? 'error' : 'ok'}>readme {missing.length ? `missing: ${missing.join(', ')}` : '✓'}</span>
+      {rc.has_committed_dotenv && <div className="error">.env file committed!</div>}
+    </div>
+  )
+}
+
+async function promisePool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>) {
+  let i = 0
+  async function worker() { while (i < items.length) { const item = items[i++]; await fn(item) } }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+}
+
 function Registrations({ d, reload }: P) {
   const [msg, setMsg] = useState('')
+  const [checking, setChecking] = useState<string | null>(null)
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null)
   const count = (id: number) => d.teams.filter((t) => t.ps_id === id).length
   async function update(t: Team, track: string | null, ps: number | null, slot: string | null) {
     const { error } = await supabase.rpc('admin_update_team', { p_team: t.id, p_track: track, p_ps: ps, p_slot: slot })
     setMsg(error ? error.message : 'Saved'); reload()
+  }
+  async function checkRepo(t: Team) {
+    setChecking(t.id)
+    const { error } = await supabase.rpc('check_team_repo', { p_team: t.id })
+    setMsg(error ? error.message : ''); setChecking(null); reload()
+  }
+  async function checkAll() {
+    const targets = d.teams.filter((t) => t.repo_url)
+    setProgress({ done: 0, total: targets.length })
+    await promisePool(targets, 4, async (t) => {
+      await supabase.rpc('check_team_repo', { p_team: t.id })
+      setProgress((p) => (p ? { done: p.done + 1, total: p.total } : p))
+    })
+    setProgress(null); reload()
+  }
+  function exportCsv() {
+    const head = ['Team', 'College', 'Status', 'Track', 'PS', 'Members', 'Repo', 'Video', 'Write-up', 'Repo check']
+    const rows = d.teams.map((t) => {
+      const mem = d.members.filter((m) => m.team_id === t.id).map((m) => `${m.name} <${m.email}>`).join('; ')
+      const rc = t.repo_check
+      const rcSummary = !rc ? 'not checked' : rc.error ? `error: ${rc.error}` :
+        `public:${rc.public ? 'Y' : 'N'} window:${rc.commits_in_window == null ? 'n/a' : rc.commits_in_window ? 'Y' : 'N'} readme:${7 - (rc.readme_headings_missing?.length ?? 0)}/7 tag:${rc.has_submission_tag ? 'Y' : 'N'} license:${rc.has_license ? 'Y' : 'N'}`
+      return [t.name, t.college, t.status, t.track_id ?? '', t.ps_id ?? '', mem, t.repo_url ?? '', t.video_url ?? '', t.writeup_url ?? '', rcSummary]
+    })
+    const csv = [head, ...rows].map((r) => r.map((c) => `"${String(c ?? '').replace(/"/g, '""')}"`).join(',')).join('\n')
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' })); a.download = 'hackurity-2026-teams.csv'; a.click()
   }
   return (
     <>
@@ -88,10 +150,13 @@ function Registrations({ d, reload }: P) {
         const n = count(p.id), cap = d.settings.max_teams_per_ps
         return <div className="tile" key={p.id}><b>PS-{p.id}</b> {p.title}<div className={n >= cap ? 'error' : ''}>{n} / {cap}{n >= cap ? ' (cap reached)' : ''}</div></div>
       })}</div>
-      <h2>Teams and slots</h2>
+      <div className="row"><h2 style={{ flex: 1 }}>Teams and slots</h2>
+        <button onClick={checkAll} disabled={!!progress}>{progress ? `Checking ${progress.done}/${progress.total}...` : 'Check all repos'}</button>
+        <button onClick={exportCsv}>Export CSV</button>
+      </div>
       <p className="muted">{msg}</p>
       <table>
-        <thead><tr><th>Team</th><th>College</th><th>Problem</th><th>Slot</th><th>Links</th></tr></thead>
+        <thead><tr><th>Team</th><th>College</th><th>Problem</th><th>Slot</th><th>Links</th><th>Repo check</th></tr></thead>
         <tbody>{d.teams.map((t) => (
           <tr key={t.id}>
             <td>{t.name}<div className="muted">{t.status}</div></td><td>{t.college}</td>
@@ -106,6 +171,13 @@ function Registrations({ d, reload }: P) {
               onChange={(e) => update(t, t.track_id, t.ps_id, e.target.value ? new Date(e.target.value).toISOString() : null)} /></td>
             <td>{[['repo', t.repo_url], ['video', t.video_url], ['write-up', t.writeup_url]].map(([l, u]) =>
               u ? <div key={l}><a href={u} target="_blank" rel="noreferrer">{l}</a></div> : null)}</td>
+            <td>
+              {repoBadges(t.repo_check)}
+              {t.repo_checked_at && <div className="muted">checked {new Date(t.repo_checked_at).toLocaleString()}</div>}
+              <button className="ghost" disabled={!t.repo_url || checking === t.id} onClick={() => checkRepo(t)}>
+                {checking === t.id ? 'Checking...' : 'Check repo'}
+              </button>
+            </td>
           </tr>
         ))}</tbody>
       </table>
