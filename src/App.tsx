@@ -22,6 +22,15 @@ function Login() {
     else setSent(true)
   }
 
+  async function signInWithGoogle() {
+    setErr('')
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.origin + window.location.pathname },
+    })
+    if (error) setErr(error.message)
+  }
+
   return (
     <div className="center">
       <form className="card narrow" onSubmit={submit}>
@@ -33,6 +42,7 @@ function Login() {
           <>
             <label>Email<input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></label>
             <button type="submit">Email me a sign-in link</button>
+            <button type="button" onClick={signInWithGoogle}>Sign in with Google</button>
           </>
         )}
         {err && <p className="error">{err}</p>}
