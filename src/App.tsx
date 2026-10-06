@@ -1,26 +1,14 @@
-import { useState, type FormEvent } from 'react'
+import { useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { useAuth } from './lib/auth'
 import { supabase } from './lib/supabase'
+import { ThemeToggle } from './components/ThemeToggle'
 import TeamApp from './pages/team/TeamApp'
 import JuryApp from './pages/jury/JuryApp'
 import AdminApp from './pages/admin/AdminApp'
 
 function Login() {
-  const [email, setEmail] = useState('')
-  const [sent, setSent] = useState(false)
   const [err, setErr] = useState('')
-
-  async function submit(e: FormEvent) {
-    e.preventDefault()
-    setErr('')
-    const { error } = await supabase.auth.signInWithOtp({
-      email: email.trim(),
-      options: { emailRedirectTo: window.location.origin + window.location.pathname },
-    })
-    if (error) setErr(error.message)
-    else setSent(true)
-  }
 
   async function signInWithGoogle() {
     setErr('')
@@ -33,20 +21,15 @@ function Login() {
 
   return (
     <div className="center">
-      <form className="card narrow" onSubmit={submit}>
+      <div className="card narrow">
+        <div className="row" style={{ justifyContent: 'flex-end', marginBottom: 8 }}>
+          <ThemeToggle />
+        </div>
         <h1>Hackurity 2026</h1>
-        <p className="muted">REVA Cybersecurity Club. Teams, jury and admins sign in with an email link.</p>
-        {sent ? (
-          <p>Check <b>{email}</b> for your sign-in link.</p>
-        ) : (
-          <>
-            <label>Email<input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></label>
-            <button type="submit">Email me a sign-in link</button>
-            <button type="button" onClick={signInWithGoogle}>Sign in with Google</button>
-          </>
-        )}
+        <p className="muted">REVA Cybersecurity Club. Teams, jury and admins sign in with Google.</p>
+        <button type="button" onClick={signInWithGoogle}>Sign in with Google</button>
         {err && <p className="error">{err}</p>}
-      </form>
+      </div>
     </div>
   )
 }

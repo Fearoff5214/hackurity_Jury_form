@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { NavLink } from 'react-router-dom'
 import { useAuth } from '../lib/auth'
+import { ThemeToggle } from './ThemeToggle'
 
 export interface NavItem { to: string; label: string; end?: boolean }
 
@@ -16,6 +17,7 @@ export function Shell({ title, nav, children }: { title: string; nav: NavItem[];
           ))}
         </nav>
         <span className="muted who">{profile?.email}</span>
+        <ThemeToggle />
         <button className="ghost" onClick={signOut}>Sign out</button>
       </header>
       <main>{children}</main>
